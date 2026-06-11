@@ -1,0 +1,9 @@
+"""Default configuration values for serial Modbus RTU communication."""
+
+DEFAULT_BAUDRATE = 9600
+DEFAULT_BYTESIZE = 8
+DEFAULT_PARITY = "N"
+DEFAULT_STOPBITS = 1
+DEFAULT_TIMEOUT = 0.5
+DEFAULT_FRAME_GAP_SECONDS = 0.005
+DEFAULT_SLAVE_ID = 1

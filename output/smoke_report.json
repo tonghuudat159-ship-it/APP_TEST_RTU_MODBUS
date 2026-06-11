@@ -1,0 +1,57 @@
+{
+  "title": "Gas Pump Modbus RTU Smoke Test",
+  "sim_profile": "normal",
+  "overall": "PASS",
+  "results": [
+    {
+      "name": "ping",
+      "status": "PASS",
+      "message": "OK"
+    },
+    {
+      "name": "status",
+      "status": "PASS",
+      "message": "OK"
+    },
+    {
+      "name": "live",
+      "status": "PASS",
+      "message": "OK"
+    },
+    {
+      "name": "sensor",
+      "status": "PASS",
+      "message": "OK"
+    },
+    {
+      "name": "clock",
+      "status": "PASS",
+      "message": "OK"
+    },
+    {
+      "name": "log-latest",
+      "status": "PASS",
+      "message": "OK"
+    },
+    {
+      "name": "log-dump",
+      "status": "PASS",
+      "message": "OK"
+    },
+    {
+      "name": "auto-test",
+      "status": "PASS",
+      "message": "OK"
+    },
+    {
+      "name": "config-unlock",
+      "status": "PASS",
+      "message": "OK"
+    },
+    {
+      "name": "config-set-unit-price",
+      "status": "PASS",
+      "message": "OK"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+PASS: device responded
+Protocol version: 7
+Slave address: 1
+Nozzle: 0 - nozzle placed / idle

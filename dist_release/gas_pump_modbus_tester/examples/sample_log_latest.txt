@@ -1,0 +1,12 @@
+Log count: 3
+Selected index: 0
+Log status: 0x0007 [has_log, select_valid, payload_loaded]
+Valid: yes
+Pump ID: 1
+Datetime: 2026-04-24 15:30:45
+Sequence: 7
+Amount: 12345
+Liters: 0.536
+Unit price: 23000
+Total liters: 100.536
+Checksum: 0x12345678

@@ -1,0 +1,50 @@
+Gas Pump Modbus RTU Test Report
+================================
+
+Started: 2026-06-12 03:36:08
+Finished: 2026-06-12 03:36:08
+Duration: 1.0 ms
+
+Connection
+----------
+Port: SIM
+Baudrate: 9600
+Slave ID: 1
+
+Device
+------
+Protocol version: 7
+Reported slave address: 1
+Nozzle: 0 - nozzle placed / idle
+Status flags: 0x0004 [storage_ready]
+
+Summary
+-------
+PASS: 18
+WARN: 0
+FAIL: 0
+SKIP: 1
+TOTAL: 19
+Overall: PASS
+
+Results
+-------
+[T01] PASS Serial client initialized - OK
+[T02] PASS Read quick status - Protocol version 7
+[T03] PASS Protocol version check - Expected version matched
+[T04] PASS Slave address check - Reported slave address matched request
+[T05] PASS Status flags sanity - Status flags decoded
+[T06] PASS Nozzle status sanity - Nozzle status is valid
+[T07] PASS Read live data - Live data decoded
+[T08] PASS Live data sanity - Live data values are sane
+[T09] PASS Read sensor snapshot - Sensor snapshot decoded
+[T10] PASS Sensor sanity - Sensor values are within normal ranges
+[T11] PASS Read pump clock - Pump clock decoded
+[T12] PASS Read fail event - No fail event reported
+[T13] PASS Read log count - Log count read
+[T14] PASS Select latest log - Latest log selected
+[T15] PASS Read latest log window - Latest log payload is valid
+[T16] PASS Read all logs limited - Limited log read completed
+[T17] PASS Illegal address exception test - Illegal data address exception received
+[T18] SKIP Wrong slave id no-response test - slow wrong-slave timeout test disabled
+[T19] PASS Config status read - Configuration is locked

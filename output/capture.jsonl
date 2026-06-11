@@ -1,0 +1,2 @@
+{"timestamp": "2026-06-12 04:03:18.547", "direction": "TX", "port": "SIM", "slave_id": 1, "function_code": 3, "frame_hex": "01 03 00 00 00 08 44 0C", "frame_len": 8, "elapsed_ms": null, "crc_valid": null, "note": null}
+{"timestamp": "2026-06-12 04:03:18.547", "direction": "RX", "port": "SIM", "slave_id": 1, "function_code": 3, "frame_hex": "01 03 10 00 07 00 01 00 04 00 00 00 00 00 00 00 00 00 00 B4 EA", "frame_len": 21, "elapsed_ms": 0.06320000011328375, "crc_valid": true, "note": null}

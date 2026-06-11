@@ -1,0 +1,309 @@
+{
+  "started_at": "2026-06-12 03:36:08",
+  "finished_at": "2026-06-12 03:36:08",
+  "duration_ms": 1.017399999909685,
+  "port": "SIM",
+  "baudrate": 9600,
+  "slave_id": 1,
+  "summary": {
+    "PASS": 18,
+    "FAIL": 0,
+    "WARN": 0,
+    "SKIP": 1,
+    "TOTAL": 19
+  },
+  "device": {
+    "protocol_version": 7,
+    "reported_slave_address": 1,
+    "status_flags": "0x0004",
+    "status_flag_names": [
+      "storage_ready"
+    ],
+    "nozzle_status": 0,
+    "nozzle_status_text": "nozzle placed / idle"
+  },
+  "results": [
+    {
+      "id": "T01",
+      "name": "Serial client initialized",
+      "status": "PASS",
+      "message": "OK",
+      "duration_ms": 0.004800000169780105,
+      "details": {
+        "port": "SIM",
+        "baudrate": 9600,
+        "slave_id": 1
+      },
+      "error_type": null,
+      "error_message": null
+    },
+    {
+      "id": "T02",
+      "name": "Read quick status",
+      "status": "PASS",
+      "message": "Protocol version 7",
+      "duration_ms": 0.06949999988137279,
+      "details": {
+        "protocol_version": 7,
+        "reported_slave_address": 1,
+        "status_flags": "0x0004",
+        "status_flag_names": [
+          "storage_ready"
+        ],
+        "nozzle_status": 0,
+        "nozzle_status_text": "nozzle placed / idle"
+      },
+      "error_type": null,
+      "error_message": null
+    },
+    {
+      "id": "T03",
+      "name": "Protocol version check",
+      "status": "PASS",
+      "message": "Expected version matched",
+      "duration_ms": 0.0022999993234407157,
+      "details": {
+        "expected": 7,
+        "actual": 7
+      },
+      "error_type": null,
+      "error_message": null
+    },
+    {
+      "id": "T04",
+      "name": "Slave address check",
+      "status": "PASS",
+      "message": "Reported slave address matched request",
+      "duration_ms": 0.0012000000424450263,
+      "details": {
+        "requested": 1,
+        "reported": 1
+      },
+      "error_type": null,
+      "error_message": null
+    },
+    {
+      "id": "T05",
+      "name": "Status flags sanity",
+      "status": "PASS",
+      "message": "Status flags decoded",
+      "duration_ms": 0.0012000000424450263,
+      "details": {
+        "status_flags": "0x0004",
+        "status_flag_names": [
+          "storage_ready"
+        ]
+      },
+      "error_type": null,
+      "error_message": null
+    },
+    {
+      "id": "T06",
+      "name": "Nozzle status sanity",
+      "status": "PASS",
+      "message": "Nozzle status is valid",
+      "duration_ms": 0.000999999429041054,
+      "details": {
+        "nozzle_status": 0,
+        "nozzle_status_text": "nozzle placed / idle"
+      },
+      "error_type": null,
+      "error_message": null
+    },
+    {
+      "id": "T07",
+      "name": "Read live data",
+      "status": "PASS",
+      "message": "Live data decoded",
+      "duration_ms": 0.1391000005241949,
+      "details": {
+        "current_amount": 12345,
+        "current_liters": 0.536,
+        "unit_price": 23000,
+        "target_amount": 0,
+        "target_liters": 0.0,
+        "daily_amount": 100000,
+        "daily_liters": 4.35,
+        "total_liters": 100.536
+      },
+      "error_type": null,
+      "error_message": null
+    },
+    {
+      "id": "T08",
+      "name": "Live data sanity",
+      "status": "PASS",
+      "message": "Live data values are sane",
+      "duration_ms": 0.01049999991664663,
+      "details": {
+        "unit_price": 23000
+      },
+      "error_type": null,
+      "error_message": null
+    },
+    {
+      "id": "T09",
+      "name": "Read sensor snapshot",
+      "status": "PASS",
+      "message": "Sensor snapshot decoded",
+      "duration_ms": 0.03789999936998356,
+      "details": {
+        "sensor_status": "0x0001",
+        "ambient_valid": true,
+        "mcu_temp_c": 25.32,
+        "ambient_temp_c": 30.02,
+        "humidity_percent": 65.5
+      },
+      "error_type": null,
+      "error_message": null
+    },
+    {
+      "id": "T10",
+      "name": "Sensor sanity",
+      "status": "PASS",
+      "message": "Sensor values are within normal ranges",
+      "duration_ms": 0.0024000000848900527,
+      "details": {
+        "sensor_status": "0x0001",
+        "ambient_valid": true,
+        "mcu_temp_c": 25.32,
+        "ambient_temp_c": 30.02,
+        "humidity_percent": 65.5
+      },
+      "error_type": null,
+      "error_message": null
+    },
+    {
+      "id": "T11",
+      "name": "Read pump clock",
+      "status": "PASS",
+      "message": "Pump clock decoded",
+      "duration_ms": 0.03599999945436139,
+      "details": {
+        "clock": "2026-04-24 15:30:45"
+      },
+      "error_type": null,
+      "error_message": null
+    },
+    {
+      "id": "T12",
+      "name": "Read fail event",
+      "status": "PASS",
+      "message": "No fail event reported",
+      "duration_ms": 0.02750000021478627,
+      "details": {
+        "code": "0x0000",
+        "code_text": "NONE",
+        "sequence": 0
+      },
+      "error_type": null,
+      "error_message": null
+    },
+    {
+      "id": "T13",
+      "name": "Read log count",
+      "status": "PASS",
+      "message": "Log count read",
+      "duration_ms": 0.025999999706982635,
+      "details": {
+        "log_count": 3
+      },
+      "error_type": null,
+      "error_message": null
+    },
+    {
+      "id": "T14",
+      "name": "Select latest log",
+      "status": "PASS",
+      "message": "Latest log selected",
+      "duration_ms": 0.026900000193563756,
+      "details": {
+        "index": 0
+      },
+      "error_type": null,
+      "error_message": null
+    },
+    {
+      "id": "T15",
+      "name": "Read latest log window",
+      "status": "PASS",
+      "message": "Latest log payload is valid",
+      "duration_ms": 0.09630000022298191,
+      "details": {
+        "log_count": 3,
+        "log_select": 0,
+        "log_status": "0x0007",
+        "log_status_names": [
+          "has_log",
+          "select_valid",
+          "payload_loaded"
+        ],
+        "is_valid": true,
+        "pump_id": 1,
+        "clock": "2026-04-24 15:30:45",
+        "sequence": 7,
+        "amount": 12345,
+        "liters": 0.536,
+        "unit_price": 23000,
+        "total_liters": 100.536,
+        "checksum": "0x12345678"
+      },
+      "error_type": null,
+      "error_message": null
+    },
+    {
+      "id": "T16",
+      "name": "Read all logs limited",
+      "status": "PASS",
+      "message": "Limited log read completed",
+      "duration_ms": 0.4158000001552864,
+      "details": {
+        "requested": 3,
+        "read": 3,
+        "valid": 3,
+        "invalid": 0
+      },
+      "error_type": null,
+      "error_message": null
+    },
+    {
+      "id": "T17",
+      "name": "Illegal address exception test",
+      "status": "PASS",
+      "message": "Illegal data address exception received",
+      "duration_ms": 0.025800000003073364,
+      "details": {
+        "exception_code": "0x02",
+        "function_code": "0x03",
+        "message": "Illegal Data Address"
+      },
+      "error_type": null,
+      "error_message": null
+    },
+    {
+      "id": "T18",
+      "name": "Wrong slave id no-response test",
+      "status": "SKIP",
+      "message": "slow wrong-slave timeout test disabled",
+      "duration_ms": 0.00199999976757681,
+      "details": {},
+      "error_type": null,
+      "error_message": null
+    },
+    {
+      "id": "T19",
+      "name": "Config status read",
+      "status": "PASS",
+      "message": "Configuration is locked",
+      "duration_ms": 0.02409999979136046,
+      "details": {
+        "config_status": "0x0000",
+        "unlocked": false,
+        "names": []
+      },
+      "error_type": null,
+      "error_message": null
+    }
+  ],
+  "overall_status": "PASS"
+}

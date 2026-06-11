@@ -1,0 +1,17 @@
+Gas Pump Modbus RTU Smoke Test
+==============================
+
+Simulator profile: normal
+
+[PASS] ping - OK
+[PASS] status - OK
+[PASS] live - OK
+[PASS] sensor - OK
+[PASS] clock - OK
+[PASS] log-latest - OK
+[PASS] log-dump - OK
+[PASS] auto-test - OK
+[PASS] config-unlock - OK
+[PASS] config-set-unit-price - OK
+
+Overall: PASS

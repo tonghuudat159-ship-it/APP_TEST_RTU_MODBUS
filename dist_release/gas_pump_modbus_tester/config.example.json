@@ -1,0 +1,11 @@
+{
+  "port": "COM5",
+  "baudrate": 9600,
+  "timeout": 0.5,
+  "slave_id": 1,
+  "debug": false,
+  "capture_txt": "output/capture.txt",
+  "capture_jsonl": "output/capture.jsonl",
+  "default_report_json": "output/report.json",
+  "default_report_txt": "output/report.txt"
+}
