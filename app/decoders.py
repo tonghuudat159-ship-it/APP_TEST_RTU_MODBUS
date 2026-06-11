@@ -117,10 +117,40 @@ def u32_from_registers(hi: int, lo: int) -> int:
     return (as_u16(hi) << 16) | as_u16(lo)
 
 
+def validate_u16(value: int, name: str = "value") -> int:
+    if not 0 <= value <= 0xFFFF:
+        raise ValueError(f"{name} must be in range 0..0xFFFF")
+    return value
+
+
+def validate_u32(value: int, name: str = "value") -> int:
+    if not 0 <= value <= 0xFFFFFFFF:
+        raise ValueError(f"{name} must be in range 0..0xFFFFFFFF")
+    return value
+
+
+def validate_password(value: int, name: str = "password") -> int:
+    if not 0 <= value <= 999999:
+        raise ValueError(f"{name} must be in range 0..999999")
+    return value
+
+
+def validate_slave_id(value: int) -> int:
+    if not 1 <= value <= 247:
+        raise ValueError("slave id must be in range 1..247")
+    return value
+
+
+def validate_hotkey_name(value: str) -> str:
+    normalized = value.upper()
+    if normalized not in ("F1", "F2", "F3", "F4"):
+        raise ValueError("hotkey must be one of F1, F2, F3, F4")
+    return normalized
+
+
 def split_u32(value: int) -> tuple[int, int]:
     """Split an unsigned 32-bit integer into high and low 16-bit registers."""
-    if not 0 <= value <= 0xFFFFFFFF:
-        raise ValueError("value must be in range 0..0xFFFFFFFF")
+    validate_u32(value)
     return (value >> 16) & 0xFFFF, value & 0xFFFF
 
 

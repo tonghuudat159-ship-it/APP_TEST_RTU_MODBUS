@@ -15,8 +15,11 @@ pip install -r requirements.txt
 ## Run Tests
 
 ```bash
-pytest
+python -m pytest
 ```
+
+Bare `pytest` may not be available on PATH in some environments, even when the
+package is installed for the active Python interpreter.
 
 ## CLI Examples
 
@@ -77,6 +80,105 @@ Dump logs to JSON and CSV:
 ```bash
 python -m app.cli log-dump --port COM5 --slave 1 --limit 100 --json output/logs.json --csv output/logs.csv
 ```
+
+## Troubleshooting real hardware
+
+Modbus data goes through UART4 on the STM32:
+
+```text
+PC USB-UART TX  -> STM32 UART4_RX / PC11
+PC USB-UART RX  -> STM32 UART4_TX / PC10
+GND             -> GND
+Serial          -> 9600 8N1
+```
+
+Firmware debug `printf` text is not Modbus payload. If debug ASCII is mixed
+into the same serial line as binary Modbus RTU frames, the Modbus frame may be
+corrupted or fail CRC validation.
+
+Use `diagnose` first when hardware does not respond:
+
+```bash
+python -m app.cli diagnose --port COM5 --slave 1 --debug
+```
+
+Capture PC-side raw TX/RX frames for comparison with firmware debug output:
+
+```bash
+python -m app.cli diagnose --port COM5 --slave 1 \
+  --capture-jsonl output/capture.jsonl \
+  --capture-txt output/capture.txt
+```
+
+Try a range of slave ids without writing to the device:
+
+```bash
+python -m app.cli diagnose --port COM5 --slave 1 --try-slaves 1-20
+```
+
+Existing commands can also export raw captures:
+
+```bash
+python -m app.cli ping --port COM5 --slave 1 \
+  --capture-txt output/ping_capture.txt
+```
+
+## Protected config writes
+
+These commands write to device configuration. Use only when the pump is safe to
+configure, double-check the slave id and COM port, and do not expose the manager
+password in screenshots or logs. Changing the slave id requires using the new id
+afterward. Clearing the daily total cannot be undone.
+
+Unlock protected writes:
+
+```bash
+python -m app.cli config-unlock --port COM5 --slave 1 --password 1234
+```
+
+Set unit price:
+
+```bash
+python -m app.cli config-set-unit-price --port COM5 --slave 1 \
+  --password 1234 --value 23000
+```
+
+Set slave id:
+
+```bash
+python -m app.cli config-set-slave-id --port COM5 --slave 1 \
+  --password 1234 --new-id 2
+```
+
+Set hotkey amount:
+
+```bash
+python -m app.cli config-set-hotkey-amount --port COM5 --slave 1 \
+  --password 1234 --key F1 --amount 10000
+```
+
+Set hotkey liters:
+
+```bash
+python -m app.cli config-set-hotkey-liters --port COM5 --slave 1 \
+  --password 1234 --key F1 --liters 1.000
+```
+
+Clear daily total:
+
+```bash
+python -m app.cli config-clear-daily --port COM5 --slave 1 \
+  --password 1234
+```
+
+Change manager password:
+
+```bash
+python -m app.cli config-change-password --port COM5 --slave 1 \
+  --old-password 1234 --new-password 5678
+```
+
+All protected config commands ask for confirmation unless `--yes` is provided.
 
 ## Auto Test Runner
 

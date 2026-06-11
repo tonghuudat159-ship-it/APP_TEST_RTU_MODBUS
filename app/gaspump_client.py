@@ -2,6 +2,7 @@
 
 from datetime import datetime
 
+from app.config_models import WriteResult
 from app.config import DEFAULT_SLAVE_ID
 from app.decoders import (
     ConfigStatus,
@@ -20,8 +21,14 @@ from app.decoders import (
     decode_sensor_snapshot,
     datetime_to_pump_clock,
     encode_clock_registers,
+    split_u32,
     u32_from_registers,
+    validate_hotkey_name,
+    validate_password,
+    validate_slave_id,
+    validate_u32,
 )
+from app.exceptions import ModbusError
 from app.modbus_rtu import (
     READ_HOLDING_REGISTERS,
     READ_INPUT_REGISTERS,
@@ -36,10 +43,18 @@ from app.register_map import (
     CLOCK_DAY_HOUR,
     CLOCK_MINUTE_SECOND,
     CLOCK_YEAR_MONTH,
+    CONFIG_CLEAR_DAILY,
+    CONFIG_CLEAR_DAILY_MAGIC,
+    CONFIG_NEW_PASSWORD_HI,
+    CONFIG_NEW_PASSWORD_LO,
     CONFIG_STATUS_COUNT,
     CONFIG_STATUS_START,
+    CONFIG_UNLOCK_PASSWORD_HI,
+    CONFIG_UNLOCK_PASSWORD_LO,
     FAIL_EVENT_COUNT,
     FAIL_EVENT_START,
+    HOTKEY_AMOUNT_REGISTERS,
+    HOTKEY_LITERS_REGISTERS,
     LIVE_DATA_COUNT,
     LIVE_DATA_START,
     LOG_COUNT_HI,
@@ -51,6 +66,9 @@ from app.register_map import (
     QUICK_STATUS_START,
     SENSOR_COUNT,
     SENSOR_START,
+    SLAVE_ADDRESS,
+    UNIT_PRICE_HI,
+    UNIT_PRICE_LO,
 )
 from app.serial_transport import SerialTransport
 
@@ -61,6 +79,7 @@ class GasPumpModbusClient:
     def __init__(self, transport: SerialTransport, slave_id: int = DEFAULT_SLAVE_ID):
         self.transport = transport
         self.slave_id = slave_id
+        self.last_log_read_errors: list[dict[str, str]] = []
 
     def read_holding_registers(self, start_address: int, quantity: int) -> list[int]:
         """Read holding registers with function code 0x03."""
@@ -71,7 +90,12 @@ class GasPumpModbusClient:
             quantity,
         )
         response = self.transport.transceive(request)
-        return parse_read_response(response, self.slave_id, READ_HOLDING_REGISTERS)
+        return parse_read_response(
+            response,
+            self.slave_id,
+            READ_HOLDING_REGISTERS,
+            expected_quantity=quantity,
+        )
 
     def read_input_registers(self, start_address: int, quantity: int) -> list[int]:
         """Read input registers with function code 0x04."""
@@ -82,7 +106,12 @@ class GasPumpModbusClient:
             quantity,
         )
         response = self.transport.transceive(request)
-        return parse_read_response(response, self.slave_id, READ_INPUT_REGISTERS)
+        return parse_read_response(
+            response,
+            self.slave_id,
+            READ_INPUT_REGISTERS,
+            expected_quantity=quantity,
+        )
 
     def write_single_register(self, register_address: int, value: int) -> bool:
         """Write a single holding register with function code 0x06."""
@@ -166,7 +195,16 @@ class GasPumpModbusClient:
 
     def read_log(self, index: int) -> LogWindow:
         """Select and read a log window entry by index."""
-        self.read_log_count()
+        if index < 0:
+            raise ValueError(f"Invalid log index {index}; index must be >= 0")
+        log_count = self.read_log_count()
+        if log_count == 0:
+            raise ValueError("No logs available on device")
+        if index >= log_count:
+            raise ValueError(
+                f"Invalid log index {index}; device reports only {log_count} logs, "
+                f"valid range is 0..{log_count - 1}"
+            )
         self.select_log(index)
         return self.read_log_window()
 
@@ -174,8 +212,10 @@ class GasPumpModbusClient:
         self,
         limit: int | None = None,
         include_invalid: bool = False,
+        strict: bool = False,
     ) -> list[LogWindow]:
         """Read valid log entries, optionally including invalid selections."""
+        self.last_log_read_errors = []
         log_count = self.read_log_count()
         if log_count == 0:
             return []
@@ -188,6 +228,15 @@ class GasPumpModbusClient:
             try:
                 log = self.read_log(index)
             except Exception as exc:
+                if strict:
+                    raise
+                self.last_log_read_errors.append(
+                    {
+                        "index": str(index),
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    }
+                )
                 if getattr(self.transport, "debug", False):
                     print(f"Warning: failed to read log index {index}: {exc}")
                 continue
@@ -198,3 +247,200 @@ class GasPumpModbusClient:
     def ping(self) -> QuickStatus:
         """Confirm the device responds by reading quick status."""
         return self.read_quick_status()
+
+    def write_u32_register_pair(
+        self,
+        hi_register: int,
+        lo_register: int,
+        value: int,
+    ) -> bool:
+        """Write a uint32 register pair in HI then LO commit order."""
+        hi, lo = split_u32(validate_u32(value))
+        hi_ok = self.write_single_register(hi_register, hi)
+        lo_ok = self.write_single_register(lo_register, lo)
+        return hi_ok and lo_ok
+
+    def unlock_config(self, password: int, verify: bool = True) -> ConfigStatus:
+        """Unlock protected config writes with a manager password."""
+        hi, lo = split_u32(validate_password(password))
+        self.write_single_register(CONFIG_UNLOCK_PASSWORD_HI, hi)
+        self.write_single_register(CONFIG_UNLOCK_PASSWORD_LO, lo)
+        status = self.read_config_status() if verify else ConfigStatus(0, [], False)
+        if verify and not status.unlocked:
+            raise ModbusError("Config unlock failed; CONFIG_STATUS did not report unlocked")
+        return status
+
+    def ensure_config_unlocked(self) -> ConfigStatus:
+        """Raise if protected config writes are not currently unlocked."""
+        status = self.read_config_status()
+        if not status.unlocked:
+            raise ModbusError("Configuration is locked; unlock config before writing")
+        return status
+
+    def set_unit_price(self, value: int, verify: bool = True) -> WriteResult:
+        value = validate_u32(value, "unit price")
+        self.ensure_config_unlocked()
+        ok = self.write_u32_register_pair(UNIT_PRICE_HI, UNIT_PRICE_LO, value)
+        details = {"value": value, "verified": False}
+        if verify and ok:
+            actual = u32_from_registers(*self.read_holding_registers(UNIT_PRICE_HI, 2))
+            details.update({"readback": actual, "verified": actual == value})
+            if actual != value:
+                return WriteResult(
+                    "set_unit_price",
+                    False,
+                    "Unit price write may have succeeded but verification failed",
+                    details,
+                )
+        return WriteResult("set_unit_price", ok, "Unit price updated" if ok else "Unit price write failed", details)
+
+    def set_slave_address(self, new_slave_id: int, verify: bool = True) -> WriteResult:
+        new_slave_id = validate_slave_id(new_slave_id)
+        self.ensure_config_unlocked()
+        old_slave_id = self.slave_id
+        ok = self.write_single_register(SLAVE_ADDRESS, new_slave_id)
+        details = {
+            "old_slave_id": old_slave_id,
+            "new_slave_id": new_slave_id,
+            "verified": False,
+        }
+        if ok:
+            self.slave_id = new_slave_id
+        if verify and ok:
+            try:
+                status = self.read_quick_status()
+                details.update(
+                    {
+                        "reported_slave_address": status.slave_address,
+                        "verified": status.slave_address == new_slave_id,
+                    }
+                )
+                if status.slave_address != new_slave_id:
+                    return WriteResult(
+                        "set_slave_address",
+                        False,
+                        "Slave id write may have succeeded but verification failed",
+                        details,
+                    )
+            except Exception as exc:
+                return WriteResult(
+                    "set_slave_address",
+                    False,
+                    f"Slave id write may have succeeded but verification failed: {exc}",
+                    details,
+                )
+        return WriteResult("set_slave_address", ok, "Slave id updated" if ok else "Slave id write failed", details)
+
+    def set_hotkey_amount(
+        self,
+        hotkey: str,
+        amount: int,
+        verify: bool = True,
+    ) -> WriteResult:
+        hotkey = validate_hotkey_name(hotkey)
+        amount = validate_u32(amount, "hotkey amount")
+        self.ensure_config_unlocked()
+        hi_register, lo_register = HOTKEY_AMOUNT_REGISTERS[hotkey]
+        ok = self.write_u32_register_pair(hi_register, lo_register, amount)
+        details = {"hotkey": hotkey, "amount": amount, "verified": False}
+        if verify and ok:
+            actual = self.read_live_data().hotkeys[hotkey].amount
+            details.update({"readback": actual, "verified": actual == amount})
+            if actual != amount:
+                return WriteResult(
+                    "set_hotkey_amount",
+                    False,
+                    "Hotkey amount write may have succeeded but verification failed",
+                    details,
+                )
+        return WriteResult("set_hotkey_amount", ok, "Hotkey amount updated" if ok else "Hotkey amount write failed", details)
+
+    def set_hotkey_liters_x1000(
+        self,
+        hotkey: str,
+        liters_x1000: int,
+        verify: bool = True,
+    ) -> WriteResult:
+        hotkey = validate_hotkey_name(hotkey)
+        liters_x1000 = validate_u32(liters_x1000, "hotkey liters_x1000")
+        self.ensure_config_unlocked()
+        hi_register, lo_register = HOTKEY_LITERS_REGISTERS[hotkey]
+        ok = self.write_u32_register_pair(hi_register, lo_register, liters_x1000)
+        details = {"hotkey": hotkey, "liters_x1000": liters_x1000, "verified": False}
+        if verify and ok:
+            actual = self.read_live_data().hotkeys[hotkey].liters_x1000
+            details.update({"readback": actual, "verified": actual == liters_x1000})
+            if actual != liters_x1000:
+                return WriteResult(
+                    "set_hotkey_liters_x1000",
+                    False,
+                    "Hotkey liters write may have succeeded but verification failed",
+                    details,
+                )
+        return WriteResult("set_hotkey_liters_x1000", ok, "Hotkey liters updated" if ok else "Hotkey liters write failed", details)
+
+    def set_hotkey_liters(
+        self,
+        hotkey: str,
+        liters: float,
+        verify: bool = True,
+    ) -> WriteResult:
+        if liters < 0:
+            raise ValueError("liters must be >= 0")
+        return self.set_hotkey_liters_x1000(hotkey, round(liters * 1000), verify)
+
+    def clear_daily_total(self, verify: bool = False) -> WriteResult:
+        self.ensure_config_unlocked()
+        ok = self.write_single_register(CONFIG_CLEAR_DAILY, CONFIG_CLEAR_DAILY_MAGIC)
+        details = {"magic": f"0x{CONFIG_CLEAR_DAILY_MAGIC:04X}", "verified": False}
+        if verify and ok:
+            live = self.read_live_data()
+            verified = live.daily_amount == 0 and live.daily_liters_x1000 == 0
+            details.update(
+                {
+                    "daily_amount": live.daily_amount,
+                    "daily_liters_x1000": live.daily_liters_x1000,
+                    "verified": verified,
+                }
+            )
+            if not verified:
+                return WriteResult(
+                    "clear_daily_total",
+                    False,
+                    "Daily total clear may have succeeded but verification failed",
+                    details,
+                )
+        return WriteResult("clear_daily_total", ok, "Daily total clear command sent" if ok else "Daily total clear write failed", details)
+
+    def change_manager_password(
+        self,
+        old_password: int,
+        new_password: int,
+        verify_unlock_new: bool = False,
+    ) -> WriteResult:
+        validate_password(old_password, "old password")
+        validate_password(new_password, "new password")
+        self.unlock_config(old_password)
+        ok = self.write_u32_register_pair(
+            CONFIG_NEW_PASSWORD_HI,
+            CONFIG_NEW_PASSWORD_LO,
+            new_password,
+        )
+        details = {
+            "old_password": _masked_password(old_password),
+            "new_password": _masked_password(new_password),
+            "verified": False,
+        }
+        if verify_unlock_new and ok:
+            status = self.unlock_config(new_password)
+            details["verified"] = status.unlocked
+        return WriteResult(
+            "change_manager_password",
+            ok,
+            "Manager password updated" if ok else "Manager password write failed",
+            details,
+        )
+
+
+def _masked_password(value: int) -> str:
+    return "*" * max(1, len(str(value)))

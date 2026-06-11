@@ -7,6 +7,12 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from app.capture import (
+    RawCaptureBuffer,
+    RawFrameRecord,
+    write_capture_jsonl,
+    write_capture_txt,
+)
 from app.config import (
     DEFAULT_BAUDRATE,
     DEFAULT_SLAVE_ID,
@@ -17,6 +23,10 @@ from app.decoders import (
     PumpClock,
     datetime_to_pump_clock,
     encode_clock_registers,
+    validate_hotkey_name,
+    validate_password,
+    validate_slave_id,
+    validate_u32,
 )
 from app.exceptions import ModbusError, SerialTransportError
 from app.gaspump_client import GasPumpModbusClient
@@ -37,6 +47,11 @@ from app.report import (
 )
 from app.serial_transport import SerialTransport
 from app.test_runner import GasPumpTestRunner
+from app.troubleshooting import (
+    DiagnosticHint,
+    diagnose_capture,
+    diagnose_exception,
+)
 
 
 def parse_int(value: str) -> int:
@@ -56,6 +71,36 @@ def parse_datetime(value: str) -> datetime:
         raise argparse.ArgumentTypeError(
             "datetime must use 'YYYY-MM-DD HH:MM:SS' or 'YYYY-MM-DDTHH:MM:SS'"
         ) from exc
+
+
+def parse_slave_range(value: str) -> list[int]:
+    """Parse slave id ranges like 1-10 or comma lists like 1,2,5."""
+    try:
+        if "," in value:
+            raw_ids = [int(part.strip(), 0) for part in value.split(",") if part.strip()]
+        elif "-" in value:
+            start_text, end_text = value.split("-", 1)
+            start = int(start_text.strip(), 0)
+            end = int(end_text.strip(), 0)
+            if start > end:
+                raise ValueError("range start must be <= range end")
+            raw_ids = list(range(start, end + 1))
+        else:
+            raw_ids = [int(value, 0)]
+    except ValueError as exc:
+        raise ValueError(f"invalid slave range: {value}") from exc
+
+    seen: set[int] = set()
+    slave_ids: list[int] = []
+    for slave_id in raw_ids:
+        if not 1 <= slave_id <= 247:
+            raise ValueError(f"invalid slave id {slave_id}; valid range is 1..247")
+        if slave_id not in seen:
+            seen.add(slave_id)
+            slave_ids.append(slave_id)
+    if not slave_ids:
+        raise ValueError("slave range must contain at least one id")
+    return slave_ids
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -83,6 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_serial_options(write_parser)
     write_parser.add_argument("--addr", required=True, type=parse_int, help="register address")
     write_parser.add_argument("--value", required=True, type=parse_int, help="register value")
+    write_parser.add_argument("--yes", action="store_true", help="skip confirmation")
     write_parser.set_defaults(handler=handle_write)
 
     for command, help_text, handler in (
@@ -98,6 +144,83 @@ def build_parser() -> argparse.ArgumentParser:
         command_parser = subparsers.add_parser(command, help=help_text)
         _add_common_serial_options(command_parser)
         command_parser.set_defaults(handler=handler)
+
+    unlock_parser = subparsers.add_parser("config-unlock", help="unlock protected config writes")
+    _add_common_serial_options(unlock_parser)
+    unlock_parser.add_argument("--password", required=True, type=parse_int, help="manager password")
+    unlock_parser.add_argument("--no-verify", action="store_true", help="skip CONFIG_STATUS verification")
+    unlock_parser.add_argument("--yes", action="store_true", help="skip confirmation")
+    unlock_parser.set_defaults(handler=handle_config_unlock)
+
+    unit_price_parser = subparsers.add_parser("config-set-unit-price", help="set pump unit price")
+    _add_common_serial_options(unit_price_parser)
+    unit_price_parser.add_argument("--password", required=True, type=parse_int, help="manager password")
+    unit_price_parser.add_argument("--value", required=True, type=parse_int, help="unit price")
+    unit_price_parser.add_argument("--no-verify", action="store_true", help="skip read-back verification")
+    unit_price_parser.add_argument("--yes", action="store_true", help="skip confirmation")
+    unit_price_parser.set_defaults(handler=handle_config_set_unit_price)
+
+    slave_id_parser = subparsers.add_parser("config-set-slave-id", help="set device slave id")
+    _add_common_serial_options(slave_id_parser)
+    slave_id_parser.add_argument("--password", required=True, type=parse_int, help="manager password")
+    slave_id_parser.add_argument("--new-id", required=True, type=parse_int, help="new slave id")
+    slave_id_parser.add_argument("--no-verify", action="store_true", help="skip read-back verification")
+    slave_id_parser.add_argument("--yes", action="store_true", help="skip confirmation")
+    slave_id_parser.set_defaults(handler=handle_config_set_slave_id)
+
+    hotkey_amount_parser = subparsers.add_parser("config-set-hotkey-amount", help="set hotkey amount")
+    _add_common_serial_options(hotkey_amount_parser)
+    hotkey_amount_parser.add_argument("--password", required=True, type=parse_int, help="manager password")
+    hotkey_amount_parser.add_argument("--key", required=True, help="hotkey F1/F2/F3/F4")
+    hotkey_amount_parser.add_argument("--amount", required=True, type=parse_int, help="hotkey amount")
+    hotkey_amount_parser.add_argument("--no-verify", action="store_true", help="skip live-data verification")
+    hotkey_amount_parser.add_argument("--yes", action="store_true", help="skip confirmation")
+    hotkey_amount_parser.set_defaults(handler=handle_config_set_hotkey_amount)
+
+    hotkey_liters_parser = subparsers.add_parser("config-set-hotkey-liters", help="set hotkey liters")
+    _add_common_serial_options(hotkey_liters_parser)
+    hotkey_liters_parser.add_argument("--password", required=True, type=parse_int, help="manager password")
+    hotkey_liters_parser.add_argument("--key", required=True, help="hotkey F1/F2/F3/F4")
+    liters_group = hotkey_liters_parser.add_mutually_exclusive_group(required=True)
+    liters_group.add_argument("--liters", type=float, help="liters value")
+    liters_group.add_argument("--liters-x1000", type=parse_int, help="raw liters_x1000 value")
+    hotkey_liters_parser.add_argument("--no-verify", action="store_true", help="skip live-data verification")
+    hotkey_liters_parser.add_argument("--yes", action="store_true", help="skip confirmation")
+    hotkey_liters_parser.set_defaults(handler=handle_config_set_hotkey_liters)
+
+    clear_daily_parser = subparsers.add_parser("config-clear-daily", help="clear daily amount/liters counters")
+    _add_common_serial_options(clear_daily_parser)
+    clear_daily_parser.add_argument("--password", required=True, type=parse_int, help="manager password")
+    clear_daily_parser.add_argument("--verify", action="store_true", help="verify daily totals are zero")
+    clear_daily_parser.add_argument("--yes", action="store_true", help="skip confirmation")
+    clear_daily_parser.set_defaults(handler=handle_config_clear_daily)
+
+    password_parser = subparsers.add_parser("config-change-password", help="change manager password")
+    _add_common_serial_options(password_parser)
+    password_parser.add_argument("--old-password", required=True, type=parse_int, help="old manager password")
+    password_parser.add_argument("--new-password", required=True, type=parse_int, help="new manager password")
+    password_parser.add_argument("--verify-new-password", action="store_true", help="try unlock with new password")
+    password_parser.add_argument("--yes", action="store_true", help="skip confirmation")
+    password_parser.set_defaults(handler=handle_config_change_password)
+
+    diagnose_parser = subparsers.add_parser(
+        "diagnose",
+        help="diagnose hardware communication and capture raw frames",
+    )
+    _add_common_serial_options(diagnose_parser)
+    diagnose_parser.add_argument(
+        "--try-slaves",
+        type=parse_slave_range,
+        default=None,
+        metavar="RANGE",
+        help="try slave ids, e.g. 1-10 or 1,2,5",
+    )
+    diagnose_parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="run only the quick response check",
+    )
+    diagnose_parser.set_defaults(handler=handle_diagnose)
 
     clock_set_parser = subparsers.add_parser("clock-set", help="set pump clock")
     _add_common_serial_options(clock_set_parser)
@@ -135,6 +258,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="include invalid log windows in output",
     )
+    log_dump_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="fail immediately if any log index cannot be read",
+    )
     log_dump_parser.add_argument("--json", type=Path, default=None, help="JSON output path")
     log_dump_parser.add_argument("--csv", type=Path, default=None, help="CSV output path")
     log_dump_parser.set_defaults(handler=handle_log_dump)
@@ -161,108 +289,151 @@ def build_parser() -> argparse.ArgumentParser:
 
 def handle_read(args: argparse.Namespace) -> int:
     """Execute the raw read command."""
-    client = _build_client(args)
-    if args.function == READ_INPUT_REGISTERS:
-        registers = client.read_input_registers(args.addr, args.count)
-    else:
-        registers = client.read_holding_registers(args.addr, args.count)
+    transport, client = _open_client(args)
+    try:
+        if args.function == READ_INPUT_REGISTERS:
+            registers = client.read_input_registers(args.addr, args.count)
+        else:
+            registers = client.read_holding_registers(args.addr, args.count)
 
-    for offset, value in enumerate(registers):
-        address = args.addr + offset
-        print(f"0x{address:04X}: 0x{value:04X} ({value})")
-    return 0
+        for offset, value in enumerate(registers):
+            address = args.addr + offset
+            print(f"0x{address:04X}: 0x{value:04X} ({value})")
+        return 0
+    finally:
+        _close_transport(transport, args)
 
 
 def handle_write(args: argparse.Namespace) -> int:
     """Execute the raw write command."""
-    client = _build_client(args)
-    valid = client.write_single_register(args.addr, args.value)
-    print(f"Write echo valid: {valid}")
-    return 0
+    if not args.yes:
+        print("WARNING: This raw write command can change pump/device state.")
+        print(f"Address: 0x{args.addr:04X}")
+        print(f"Value: 0x{args.value:04X}")
+        confirmation = input("Type YES to continue: ")
+        if confirmation != "YES":
+            print("Cancelled.")
+            return 1
+
+    transport, client = _open_client(args)
+    try:
+        valid = client.write_single_register(args.addr, args.value)
+        print(f"Write echo valid: {valid}")
+        return 0
+    finally:
+        _close_transport(transport, args)
 
 
 def handle_status(args: argparse.Namespace) -> int:
     """Print quick pump status."""
-    status = _build_client(args).read_quick_status()
-    print(f"Protocol version: {status.protocol_version}")
-    print(f"Slave address: {status.slave_address}")
-    print(f"Status flags: 0x{status.status_flags:04X} {_format_names(status.status_flag_names)}")
-    print(f"Pump mode: {status.pump_mode}")
-    print(f"Key mode: {status.key_mode}")
-    print(f"Screen: {status.screen}")
-    print(f"Selected field: {status.selected_field}")
-    print(f"Nozzle status: {status.nozzle_status} - {status.nozzle_status_text}")
-    return 0
+    transport, client = _open_client(args)
+    try:
+        status = client.read_quick_status()
+        print(f"Protocol version: {status.protocol_version}")
+        print(f"Slave address: {status.slave_address}")
+        print(f"Status flags: 0x{status.status_flags:04X} {_format_names(status.status_flag_names)}")
+        print(f"Pump mode: {status.pump_mode}")
+        print(f"Key mode: {status.key_mode}")
+        print(f"Screen: {status.screen}")
+        print(f"Selected field: {status.selected_field}")
+        print(f"Nozzle status: {status.nozzle_status} - {status.nozzle_status_text}")
+        return 0
+    finally:
+        _close_transport(transport, args)
 
 
 def handle_ping(args: argparse.Namespace) -> int:
     """Print a short response check."""
-    status = _build_client(args).ping()
-    print("PASS: device responded")
-    print(f"Protocol version: {status.protocol_version}")
-    print(f"Slave address: {status.slave_address}")
-    print(f"Nozzle: {status.nozzle_status} - {status.nozzle_status_text}")
-    return 0
+    transport, client = _open_client(args)
+    try:
+        status = client.ping()
+        print("PASS: device responded")
+        print(f"Protocol version: {status.protocol_version}")
+        print(f"Slave address: {status.slave_address}")
+        print(f"Nozzle: {status.nozzle_status} - {status.nozzle_status_text}")
+        return 0
+    finally:
+        _close_transport(transport, args)
 
 
 def handle_nozzle(args: argparse.Namespace) -> int:
     """Print nozzle status."""
-    nozzle_status = _build_client(args).read_nozzle_status()
-    text = NOZZLE_STATUS_TEXT.get(nozzle_status, f"unknown nozzle status {nozzle_status}")
-    print(f"Nozzle status: {nozzle_status} - {text}")
-    return 0
+    transport, client = _open_client(args)
+    try:
+        nozzle_status = client.read_nozzle_status()
+        text = NOZZLE_STATUS_TEXT.get(nozzle_status, f"unknown nozzle status {nozzle_status}")
+        print(f"Nozzle status: {nozzle_status} - {text}")
+        return 0
+    finally:
+        _close_transport(transport, args)
 
 
 def handle_sensor(args: argparse.Namespace) -> int:
     """Print sensor readings."""
-    sensor = _build_client(args).read_sensor_snapshot()
-    names = [
-        name for bit, name in SENSOR_STATUS_BITS.items() if sensor.sensor_status & bit
-    ]
-    print(f"Sensor status: 0x{sensor.sensor_status:04X} {_format_names(names)}")
-    print(f"MCU temperature: {sensor.mcu_temp_c:.2f} C")
-    if sensor.ambient_valid:
-        print(f"Ambient temperature: {sensor.ambient_temp_c:.2f} C")
-        print(f"Humidity: {sensor.humidity_percent:.2f} %RH")
-    else:
-        print("Ambient temperature: unavailable")
-        print("Humidity: unavailable")
-    return 0
+    transport, client = _open_client(args)
+    try:
+        sensor = client.read_sensor_snapshot()
+        names = [
+            name for bit, name in SENSOR_STATUS_BITS.items() if sensor.sensor_status & bit
+        ]
+        print(f"Sensor status: 0x{sensor.sensor_status:04X} {_format_names(names)}")
+        print(f"MCU temperature: {sensor.mcu_temp_c:.2f} C")
+        if sensor.ambient_valid:
+            print(f"Ambient temperature: {sensor.ambient_temp_c:.2f} C")
+            print(f"Humidity: {sensor.humidity_percent:.2f} %RH")
+        else:
+            print("Ambient temperature: unavailable")
+            print("Humidity: unavailable")
+        return 0
+    finally:
+        _close_transport(transport, args)
 
 
 def handle_live(args: argparse.Namespace) -> int:
     """Print live pump data."""
-    live = _build_client(args).read_live_data()
-    print(f"Current amount: {live.current_amount}")
-    print(f"Current liters: {live.current_liters:.3f} L")
-    print(f"Unit price: {live.unit_price}")
-    print(f"Target amount: {live.target_amount}")
-    print(f"Target liters: {live.target_liters:.3f} L")
-    print(f"Daily amount: {live.daily_amount}")
-    print(f"Daily liters: {live.daily_liters:.3f} L")
-    print(f"Total liters: {live.total_liters:.3f} L")
-    print()
-    print("Hotkeys:")
-    for name in ("F1", "F2", "F3", "F4"):
-        preset = live.hotkeys[name]
-        print(f"{name}: amount={preset.amount}, liters={preset.liters:.3f} L")
-    return 0
+    transport, client = _open_client(args)
+    try:
+        live = client.read_live_data()
+        print(f"Current amount: {live.current_amount}")
+        print(f"Current liters: {live.current_liters:.3f} L")
+        print(f"Unit price: {live.unit_price}")
+        print(f"Target amount: {live.target_amount}")
+        print(f"Target liters: {live.target_liters:.3f} L")
+        print(f"Daily amount: {live.daily_amount}")
+        print(f"Daily liters: {live.daily_liters:.3f} L")
+        print(f"Total liters: {live.total_liters:.3f} L")
+        print()
+        print("Hotkeys:")
+        for name in ("F1", "F2", "F3", "F4"):
+            preset = live.hotkeys[name]
+            print(f"{name}: amount={preset.amount}, liters={preset.liters:.3f} L")
+        return 0
+    finally:
+        _close_transport(transport, args)
 
 
 def handle_config_status(args: argparse.Namespace) -> int:
     """Print configuration status."""
-    status = _build_client(args).read_config_status()
-    names = [name for bit, name in CONFIG_STATUS_BITS.items() if status.value & bit]
-    print(f"Config status: 0x{status.value:04X} {_format_names(names)}")
-    print(f"Unlocked: {'yes' if status.unlocked else 'no'}")
-    return 0
+    transport, client = _open_client(args)
+    try:
+        status = client.read_config_status()
+        names = [name for bit, name in CONFIG_STATUS_BITS.items() if status.value & bit]
+        print(f"Config status: 0x{status.value:04X} {_format_names(names)}")
+        print(f"Unlocked: {'yes' if status.unlocked else 'no'}")
+        return 0
+    finally:
+        _close_transport(transport, args)
 
 
 def handle_clock(args: argparse.Namespace) -> int:
     """Print pump clock."""
-    clock = _build_client(args).read_clock()
-    print(f"Pump clock: {_format_clock(clock)}")
-    return 0
+    transport, client = _open_client(args)
+    try:
+        clock = client.read_clock()
+        print(f"Pump clock: {_format_clock(clock)}")
+        return 0
+    finally:
+        _close_transport(transport, args)
 
 
 def handle_clock_set(args: argparse.Namespace) -> int:
@@ -279,61 +450,290 @@ def handle_clock_set_now(args: argparse.Namespace) -> int:
 
 def handle_fail(args: argparse.Namespace) -> int:
     """Print last fail event."""
-    event = _build_client(args).read_fail_event()
-    print(f"Fail code: 0x{event.code:04X} - {event.code_text}")
-    print(f"Sequence: {event.sequence}")
-    return 0
+    transport, client = _open_client(args)
+    try:
+        event = client.read_fail_event()
+        print(f"Fail code: 0x{event.code:04X} - {event.code_text}")
+        print(f"Sequence: {event.sequence}")
+        return 0
+    finally:
+        _close_transport(transport, args)
+
+
+def handle_config_unlock(args: argparse.Namespace) -> int:
+    """Unlock protected configuration writes."""
+    validate_password(args.password)
+    message = (
+        "WARNING: This unlock enables protected configuration writes for about 60 seconds.\n"
+        f"Password: {mask_password(args.password)}"
+    )
+    if not require_confirmation(message, args.yes):
+        return 1
+
+    def operation(client: GasPumpModbusClient) -> int:
+        status = client.unlock_config(args.password, verify=not args.no_verify)
+        _print_config_status(status)
+        return 0
+
+    return _run_config_action(args, operation)
+
+
+def handle_config_set_unit_price(args: argparse.Namespace) -> int:
+    """Set pump unit price after protected unlock."""
+    validate_password(args.password)
+    validate_u32(args.value, "unit price")
+    message = (
+        "WARNING: This changes the pump unit price and writes configuration to EEPROM.\n"
+        f"New unit price: {args.value}\n"
+        f"Password: {mask_password(args.password)}"
+    )
+    if not require_confirmation(message, args.yes):
+        return 1
+
+    def operation(client: GasPumpModbusClient) -> int:
+        client.unlock_config(args.password)
+        result = client.set_unit_price(args.value, verify=not args.no_verify)
+        _print_write_result(result)
+        return 0 if result.success else 1
+
+    return _run_config_action(args, operation)
+
+
+def handle_config_set_slave_id(args: argparse.Namespace) -> int:
+    """Set device slave id after protected unlock."""
+    validate_password(args.password)
+    validate_slave_id(args.new_id)
+    old_id = args.slave
+    message = (
+        "WARNING: This changes the device slave id.\n"
+        "After success, future commands must use the new id.\n"
+        "The write ACK is expected from the old slave id.\n"
+        f"Old slave id: {old_id}\n"
+        f"New slave id: {args.new_id}\n"
+        f"Password: {mask_password(args.password)}"
+    )
+    if not require_confirmation(message, args.yes):
+        return 1
+
+    def operation(client: GasPumpModbusClient) -> int:
+        client.unlock_config(args.password)
+        result = client.set_slave_address(args.new_id, verify=not args.no_verify)
+        _print_write_result(result)
+        print(f"Old slave id: {old_id}")
+        print(f"New slave id: {args.new_id}")
+        print(f"Next command example: python -m app.cli ping --port {args.port} --slave {args.new_id}")
+        return 0 if result.success else 1
+
+    return _run_config_action(args, operation)
+
+
+def handle_config_set_hotkey_amount(args: argparse.Namespace) -> int:
+    """Set a hotkey amount after protected unlock."""
+    validate_password(args.password)
+    hotkey = validate_hotkey_name(args.key)
+    validate_u32(args.amount, "hotkey amount")
+    message = (
+        "WARNING: This changes a pump hotkey amount and writes configuration to EEPROM.\n"
+        f"Hotkey: {hotkey}\n"
+        f"Amount: {args.amount}\n"
+        f"Password: {mask_password(args.password)}"
+    )
+    if not require_confirmation(message, args.yes):
+        return 1
+
+    def operation(client: GasPumpModbusClient) -> int:
+        client.unlock_config(args.password)
+        result = client.set_hotkey_amount(hotkey, args.amount, verify=not args.no_verify)
+        _print_write_result(result)
+        return 0 if result.success else 1
+
+    return _run_config_action(args, operation)
+
+
+def handle_config_set_hotkey_liters(args: argparse.Namespace) -> int:
+    """Set a hotkey liters preset after protected unlock."""
+    validate_password(args.password)
+    hotkey = validate_hotkey_name(args.key)
+    if args.liters is not None:
+        if args.liters < 0:
+            raise ValueError("liters must be >= 0")
+        liters_x1000 = validate_u32(round(args.liters * 1000), "liters_x1000")
+    else:
+        liters_x1000 = validate_u32(args.liters_x1000, "liters_x1000")
+    message = (
+        "WARNING: This changes a pump hotkey liters preset and writes configuration to EEPROM.\n"
+        f"Hotkey: {hotkey}\n"
+        f"Liters x1000: {liters_x1000}\n"
+        f"Password: {mask_password(args.password)}"
+    )
+    if not require_confirmation(message, args.yes):
+        return 1
+
+    def operation(client: GasPumpModbusClient) -> int:
+        client.unlock_config(args.password)
+        result = client.set_hotkey_liters_x1000(
+            hotkey,
+            liters_x1000,
+            verify=not args.no_verify,
+        )
+        _print_write_result(result)
+        return 0 if result.success else 1
+
+    return _run_config_action(args, operation)
+
+
+def handle_config_clear_daily(args: argparse.Namespace) -> int:
+    """Clear daily total counters after protected unlock."""
+    validate_password(args.password)
+    message = (
+        "WARNING: This clears daily amount/liters counters.\n"
+        "This cannot be undone.\n"
+        f"Password: {mask_password(args.password)}"
+    )
+    if not require_confirmation(message, args.yes):
+        return 1
+
+    def operation(client: GasPumpModbusClient) -> int:
+        client.unlock_config(args.password)
+        result = client.clear_daily_total(verify=args.verify)
+        _print_write_result(result)
+        return 0 if result.success else 1
+
+    return _run_config_action(args, operation)
+
+
+def handle_config_change_password(args: argparse.Namespace) -> int:
+    """Change manager password after protected unlock."""
+    validate_password(args.old_password, "old password")
+    validate_password(args.new_password, "new password")
+    message = (
+        "WARNING: This changes the manager password.\n"
+        "Losing the password may prevent future Modbus config writes.\n"
+        f"Old password: {mask_password(args.old_password)}\n"
+        f"New password: {mask_password(args.new_password)}"
+    )
+    if not require_confirmation(message, args.yes):
+        return 1
+
+    def operation(client: GasPumpModbusClient) -> int:
+        result = client.change_manager_password(
+            args.old_password,
+            args.new_password,
+            verify_unlock_new=args.verify_new_password,
+        )
+        _print_write_result(result)
+        return 0 if result.success else 1
+
+    return _run_config_action(args, operation)
+
+
+def handle_diagnose(args: argparse.Namespace) -> int:
+    """Run a non-destructive hardware diagnosis."""
+    if getattr(args, "_capture_buffer", None) is None:
+        args._capture_buffer = RawCaptureBuffer()
+    print("Gas Pump Modbus RTU Diagnose")
+    print(f"Port: {args.port}")
+    print(f"Baudrate: {args.baudrate} 8N1")
+    print(f"Requested slave: {args.slave}")
+    print()
+
+    try:
+        transport, client = _open_client(args)
+    except SerialTransportError as exc:
+        print("Result: FAIL")
+        print(f"Error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        _print_hints(diagnose_exception(exc))
+        export_capture_from_args(args, getattr(args, "_capture_buffer", None))
+        return 2
+
+    try:
+        if args.try_slaves:
+            return _handle_diagnose_try_slaves(args, transport)
+        status = client.ping()
+        print("Result: PASS")
+        print("Device responded.")
+        print(f"Protocol version: {status.protocol_version}")
+        print(f"Reported slave address: {status.slave_address}")
+        print(f"Nozzle: {status.nozzle_status} - {status.nozzle_status_text}")
+        print(f"Status flags: 0x{status.status_flags:04X} {_format_names(status.status_flag_names)}")
+        return 0
+    except Exception as exc:
+        print("Result: FAIL")
+        print(f"Error: {type(exc).__name__}: {exc}")
+        hints = diagnose_exception(exc) + diagnose_capture(_capture_records(args))
+        _print_hints(hints)
+        _print_raw_capture_summary(_capture_records(args))
+        return 1
+    finally:
+        _close_transport(transport, args)
 
 
 def handle_log_latest(args: argparse.Namespace) -> int:
     """Print the latest log entry."""
-    log = _build_client(args).read_log(0)
-    _print_log_window(log)
-    return 0
+    transport, client = _open_client(args)
+    try:
+        log = client.read_log(0)
+        _print_log_window(log)
+        return 0
+    finally:
+        _close_transport(transport, args)
 
 
 def handle_log_read(args: argparse.Namespace) -> int:
     """Print a selected log entry."""
-    log = _build_client(args).read_log(args.index)
-    _print_log_window(log)
-    return 0
+    transport, client = _open_client(args)
+    try:
+        log = client.read_log(args.index)
+        _print_log_window(log)
+        return 0
+    finally:
+        _close_transport(transport, args)
 
 
 def handle_log_dump(args: argparse.Namespace) -> int:
     """Dump logs to terminal or export files."""
-    client = _build_client(args)
-    log_count = client.read_log_count()
-    logs = client.read_all_logs(
-        limit=args.limit,
-        include_invalid=args.include_invalid,
-    )
+    transport, client = _open_client(args)
+    try:
+        log_count = client.read_log_count()
+        logs = client.read_all_logs(
+            limit=args.limit,
+            include_invalid=args.include_invalid,
+            strict=args.strict,
+        )
 
-    if args.json is not None:
-        write_json(args.json, logs)
-    if args.csv is not None:
-        write_logs_csv(args.csv, logs)
+        if args.json is not None:
+            if not _write_export_file(args.json, write_json, args.json, logs):
+                return 2
+        if args.csv is not None:
+            if not _write_export_file(args.csv, write_logs_csv, args.csv, logs):
+                return 2
 
-    if args.json is None and args.csv is None:
-        for log in logs:
-            _print_log_window(log)
-            print()
+        if args.json is None and args.csv is None:
+            for log in logs:
+                _print_log_window(log)
+                print()
 
-    print(f"Log count reported by device: {log_count}")
-    print(f"Logs exported: {len(logs)}")
-    if args.json is not None:
-        print(f"JSON: {args.json}")
-    if args.csv is not None:
-        print(f"CSV: {args.csv}")
-    return 0
+        _print_log_read_warnings(client.last_log_read_errors)
+        print(f"Log count reported by device: {log_count}")
+        print(f"Logs exported: {len(logs)}")
+        if args.json is not None:
+            print(f"JSON: {args.json}")
+        if args.csv is not None:
+            print(f"CSV: {args.csv}")
+        return 0
+    finally:
+        _close_transport(transport, args)
 
 
 def handle_test(args: argparse.Namespace) -> int:
     """Run the automated non-destructive diagnostic suite."""
+    capture = create_capture_from_args(args)
     transport = SerialTransport(
         port=args.port,
         baudrate=args.baudrate,
         timeout=args.timeout,
         debug=args.debug,
+        capture=capture,
     )
     try:
         transport.open()
@@ -351,13 +751,16 @@ def handle_test(args: argparse.Namespace) -> int:
             debug=args.debug,
             expected_protocol_version=args.expected_version,
             include_slow_tests=args.include_slow_tests,
+            capture=capture,
         )
         report = runner.run_all()
 
         if args.out is not None:
-            write_test_report_json(args.out, report)
+            if not _write_report_file(args.out, write_test_report_json, args.out, report):
+                return 2
         if args.txt is not None:
-            write_test_report_txt(args.txt, report)
+            if not _write_report_file(args.txt, write_test_report_txt, args.txt, report):
+                return 2
 
         print("Gas Pump Modbus RTU Auto Test")
         print(f"Port: {args.port}")
@@ -383,6 +786,7 @@ def handle_test(args: argparse.Namespace) -> int:
         except SerialTransportError as exc:
             if args.debug:
                 print(f"Warning: failed to close serial transport: {exc}", file=sys.stderr)
+        export_capture_from_args(args, capture)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -402,16 +806,150 @@ def _add_common_serial_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--baudrate", type=parse_int, default=DEFAULT_BAUDRATE, help="baudrate")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="read timeout seconds")
     parser.add_argument("--debug", action="store_true", help="print raw TX/RX hex")
+    parser.add_argument("--capture-jsonl", type=Path, default=None, help="raw capture JSONL output path")
+    parser.add_argument("--capture-txt", type=Path, default=None, help="raw capture TXT output path")
 
 
-def _build_client(args: argparse.Namespace) -> GasPumpModbusClient:
+def _open_client(args: argparse.Namespace) -> tuple[SerialTransport, GasPumpModbusClient]:
+    capture = create_capture_from_args(args)
     transport = SerialTransport(
         port=args.port,
         baudrate=args.baudrate,
         timeout=args.timeout,
         debug=args.debug,
+        capture=capture,
+    )
+    transport.open()
+    return transport, GasPumpModbusClient(transport=transport, slave_id=args.slave)
+
+
+def _build_client(args: argparse.Namespace) -> GasPumpModbusClient:
+    """Build a client without opening its transport.
+
+    Kept for compatibility with tests or external callers; CLI handlers should
+    prefer _open_client so the transport can be closed in a finally block.
+    """
+    transport = SerialTransport(
+        port=args.port,
+        baudrate=args.baudrate,
+        timeout=args.timeout,
+        debug=args.debug,
+        capture=create_capture_from_args(args),
     )
     return GasPumpModbusClient(transport=transport, slave_id=args.slave)
+
+
+def _close_transport(transport: SerialTransport, args: argparse.Namespace) -> None:
+    try:
+        transport.close()
+    except SerialTransportError as exc:
+        if args.debug:
+            print(f"Warning: failed to close serial transport: {exc}", file=sys.stderr)
+    export_result = export_capture_from_args(args, getattr(args, "_capture_buffer", None))
+    if export_result:
+        args._capture_export_result = export_result
+
+
+def require_confirmation(message: str, yes: bool = False) -> bool:
+    if yes:
+        return True
+    print(message)
+    confirmation = input("Type YES to continue: ")
+    if confirmation != "YES":
+        print("Cancelled.")
+        return False
+    return True
+
+
+def mask_password(value: int) -> str:
+    return "*" * max(1, len(str(value)))
+
+
+def _run_config_action(args: argparse.Namespace, operation) -> int:
+    transport = None
+    result = 1
+    try:
+        transport, client = _open_client(args)
+        result = operation(client)
+    except SerialTransportError as exc:
+        print(f"ERROR: Serial/setup problem: {exc}", file=sys.stderr)
+        _print_hints(diagnose_exception(exc))
+        result = 2
+    except ModbusError as exc:
+        print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+        _print_hints(diagnose_exception(exc))
+        result = 1
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        result = 1
+    finally:
+        if transport is not None:
+            _close_transport(transport, args)
+        else:
+            export_capture_from_args(args, getattr(args, "_capture_buffer", None))
+    if getattr(args, "_capture_export_result", 0):
+        return 2
+    return result
+
+
+def _print_config_status(status) -> None:
+    print(f"Config status: 0x{status.value:04X} {_format_names(status.names)}")
+    print(f"Unlocked: {'yes' if status.unlocked else 'no'}")
+
+
+def _print_write_result(result) -> None:
+    print(f"Result: {'PASS' if result.success else 'FAIL'}")
+    print(result.message)
+    verified = result.details.get("verified")
+    if verified is not None:
+        print(f"Verified: {'yes' if verified else 'no'}")
+    for key, value in result.details.items():
+        if "password" in key:
+            print(f"{key}: {value}")
+
+
+def create_capture_from_args(args: argparse.Namespace) -> RawCaptureBuffer | None:
+    if getattr(args, "_capture_buffer", None) is not None:
+        return args._capture_buffer
+    if getattr(args, "capture_jsonl", None) is None and getattr(args, "capture_txt", None) is None:
+        return None
+    args._capture_buffer = RawCaptureBuffer()
+    return args._capture_buffer
+
+
+def export_capture_from_args(
+    args: argparse.Namespace,
+    capture: RawCaptureBuffer | None,
+) -> int:
+    if capture is None or getattr(args, "_capture_exported", False):
+        return 0
+    result = 0
+    records = capture.records()
+    if getattr(args, "capture_jsonl", None) is not None:
+        try:
+            write_capture_jsonl(args.capture_jsonl, records)
+        except OSError as exc:
+            print(
+                f"ERROR: Failed to write capture file {args.capture_jsonl}: {exc}",
+                file=sys.stderr,
+            )
+            result = 2
+    if getattr(args, "capture_txt", None) is not None:
+        try:
+            write_capture_txt(args.capture_txt, records)
+        except OSError as exc:
+            print(
+                f"ERROR: Failed to write capture file {args.capture_txt}: {exc}",
+                file=sys.stderr,
+            )
+            result = 2
+    args._capture_exported = True
+    return result
+
+
+def _capture_records(args: argparse.Namespace) -> list[RawFrameRecord]:
+    capture = getattr(args, "_capture_buffer", None)
+    return capture.records() if capture is not None else []
 
 
 def _confirm_and_set_clock(args: argparse.Namespace, clock: PumpClock) -> int:
@@ -428,9 +966,96 @@ def _confirm_and_set_clock(args: argparse.Namespace, clock: PumpClock) -> int:
             print("Cancelled.")
             return 1
 
-    valid = _build_client(args).set_clock(clock)
-    print(f"Clock write valid: {valid}")
-    return 0 if valid else 1
+    transport, client = _open_client(args)
+    try:
+        valid = client.set_clock(clock)
+        print(f"Clock write valid: {valid}")
+        return 0 if valid else 1
+    finally:
+        _close_transport(transport, args)
+
+
+def _write_export_file(path: Path, writer, *writer_args) -> bool:
+    try:
+        writer(*writer_args)
+        return True
+    except OSError as exc:
+        print(f"ERROR: Failed to write export file {path}: {exc}", file=sys.stderr)
+        return False
+
+
+def _write_report_file(path: Path, writer, *writer_args) -> bool:
+    try:
+        writer(*writer_args)
+        return True
+    except OSError as exc:
+        print(f"ERROR: Failed to write report file {path}: {exc}", file=sys.stderr)
+        return False
+
+
+def _print_log_read_warnings(errors: list[dict[str, str]]) -> None:
+    if not errors:
+        return
+    print(f"WARNING: {len(errors)} log indices failed and were skipped.")
+    for error in errors:
+        print(
+            f"- index={error['index']} "
+            f"{error['error_type']}: {error['error_message']}"
+        )
+
+
+def _handle_diagnose_try_slaves(
+    args: argparse.Namespace,
+    transport: SerialTransport,
+) -> int:
+    last_error: Exception | None = None
+    for slave_id in args.try_slaves:
+        client = GasPumpModbusClient(transport=transport, slave_id=slave_id)
+        try:
+            status = client.read_quick_status()
+        except Exception as exc:
+            last_error = exc
+            continue
+        print("Result: PASS")
+        print(f"Discovered slave id: {slave_id}")
+        print(f"Protocol version: {status.protocol_version}")
+        print(f"Reported slave address: {status.slave_address}")
+        print(f"Nozzle: {status.nozzle_status} - {status.nozzle_status_text}")
+        return 0
+
+    print("Result: FAIL")
+    print(f"No responding slave found in: {','.join(str(value) for value in args.try_slaves)}")
+    hints: list[DiagnosticHint] = []
+    if last_error is not None:
+        print(f"Last error: {type(last_error).__name__}: {last_error}")
+        hints.extend(diagnose_exception(last_error))
+    hints.extend(diagnose_capture(_capture_records(args)))
+    _print_hints(hints)
+    _print_raw_capture_summary(_capture_records(args))
+    return 1
+
+
+def _print_hints(hints: list[DiagnosticHint]) -> None:
+    if not hints:
+        return
+    print()
+    print("Likely causes:")
+    for hint in hints:
+        print(f"[{hint.severity}] {hint.title}")
+        if hint.explanation:
+            print(hint.explanation)
+        for action in hint.suggested_actions:
+            print(f"- {action}")
+        print()
+
+
+def _print_raw_capture_summary(records: list[RawFrameRecord]) -> None:
+    if not records:
+        return
+    print("Raw capture:")
+    for record in records:
+        frame = record.frame_hex if record.frame_hex else "<none>"
+        print(f"{record.direction} {frame}")
 
 
 def _format_names(names: list[str]) -> str:

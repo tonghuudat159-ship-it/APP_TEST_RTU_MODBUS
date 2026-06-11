@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, ClassVar
 
+from app.capture import RawCaptureBuffer
 from app.decoders import (
     ConfigStatus,
     FailEvent,
@@ -20,6 +21,11 @@ from app.decoders import (
 )
 from app.exceptions import ModbusExceptionResponse, ModbusTimeoutError
 from app.gaspump_client import GasPumpModbusClient
+from app.troubleshooting import (
+    diagnose_capture,
+    diagnose_exception,
+    hints_to_dicts,
+)
 
 PASS = "PASS"
 FAIL = "FAIL"
@@ -77,6 +83,7 @@ class GasPumpTestRunner:
         debug: bool = False,
         expected_protocol_version: int = 7,
         include_slow_tests: bool = False,
+        capture: RawCaptureBuffer | None = None,
     ):
         self.client = client
         self.port = port
@@ -85,6 +92,7 @@ class GasPumpTestRunner:
         self.debug = debug
         self.expected_protocol_version = expected_protocol_version
         self.include_slow_tests = include_slow_tests
+        self.capture = capture
         self.context: dict[str, Any] = {}
         self.device: dict[str, Any] = {}
 
@@ -154,12 +162,16 @@ class GasPumpTestRunner:
         except Exception as exc:
             if self.debug:
                 print(f"Warning: {test_id} {name} failed with {type(exc).__name__}: {exc}")
+            diagnostic_hints = diagnose_exception(exc)
+            if self.capture is not None:
+                diagnostic_hints.extend(diagnose_capture(self.capture.records()))
             return TestStepResult(
                 id=test_id,
                 name=name,
                 status=FAIL,
                 message="Unhandled test exception",
                 duration_ms=(time.perf_counter() - started) * 1000.0,
+                details={"diagnostic_hints": hints_to_dicts(diagnostic_hints)},
                 error_type=type(exc).__name__,
                 error_message=str(exc),
             )

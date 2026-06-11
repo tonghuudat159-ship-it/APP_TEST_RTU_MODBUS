@@ -112,6 +112,7 @@ def parse_read_response(
     response: bytes,
     expected_slave_id: int,
     expected_function_code: int,
+    expected_quantity: int | None = None,
 ) -> list[int]:
     """Parse a read register response into a list of 16-bit register values."""
     _validate_slave_id(expected_slave_id)
@@ -129,24 +130,37 @@ def parse_read_response(
 
     if slave_id != expected_slave_id:
         raise ModbusFrameError(
-            f"unexpected slave id {slave_id}, expected {expected_slave_id}"
+            f"unexpected slave id: expected {expected_slave_id}, got {slave_id}; "
+            f"response: {bytes_to_hex(response)}"
         )
     if function_code != expected_function_code:
         raise ModbusFrameError(
-            f"unexpected function code 0x{function_code:02X}, "
-            f"expected 0x{expected_function_code:02X}"
+            "unexpected function code: "
+            f"expected 0x{expected_function_code:02X}, got 0x{function_code:02X}; "
+            f"response: {bytes_to_hex(response)}"
         )
     if byte_count % 2 != 0:
-        raise ModbusFrameError("read response byte_count must be even")
+        raise ModbusFrameError(
+            "read response byte_count must be even; "
+            f"byte_count={byte_count}; response: {bytes_to_hex(response)}"
+        )
     if byte_count != len(data):
         raise ModbusFrameError(
-            f"byte_count {byte_count} does not match data length {len(data)}"
+            f"byte_count {byte_count} does not match data length {len(data)}; "
+            f"response: {bytes_to_hex(response)}"
         )
 
-    return [
+    registers = [
         (data[index] << 8) | data[index + 1]
         for index in range(0, len(data), 2)
     ]
+    if expected_quantity is not None and len(registers) != expected_quantity:
+        raise ModbusFrameError(
+            "read response register quantity mismatch: "
+            f"expected quantity {expected_quantity}, actual quantity {len(registers)}; "
+            f"response: {bytes_to_hex(response)}"
+        )
+    return registers
 
 
 def parse_write_single_register_response(
@@ -173,11 +187,13 @@ def parse_write_single_register_response(
 
     if slave_id != expected_slave_id:
         raise ModbusFrameError(
-            f"unexpected slave id {slave_id}, expected {expected_slave_id}"
+            f"unexpected slave id: expected {expected_slave_id}, got {slave_id}; "
+            f"response: {bytes_to_hex(response)}"
         )
     if function_code != WRITE_SINGLE_REGISTER:
         raise ModbusFrameError(
-            f"unexpected function code 0x{function_code:02X}, expected 0x06"
+            f"unexpected function code: expected 0x06, got 0x{function_code:02X}; "
+            f"response: {bytes_to_hex(response)}"
         )
     if register_address != expected_register_address:
         raise ModbusFrameError(
@@ -199,7 +215,10 @@ def parse_exception_response(response: bytes) -> None:
         return
 
     if len(response) != 5:
-        raise ModbusFrameError("Modbus exception response must be 5 bytes")
+        raise ModbusFrameError(
+            "Modbus exception response must be 5 bytes; "
+            f"response: {bytes_to_hex(response)}"
+        )
     _ensure_crc(response)
     raise ModbusExceptionResponse(
         slave_id=response[0],
@@ -210,13 +229,22 @@ def parse_exception_response(response: bytes) -> None:
 
 def _ensure_crc(frame: bytes) -> None:
     if not verify_crc(frame):
-        raise ModbusCrcError(f"CRC mismatch for frame: {bytes_to_hex(frame)}")
+        received = frame[-2] | (frame[-1] << 8) if len(frame) >= 2 else None
+        calculated = crc16_modbus(frame[:-2]) if len(frame) >= 2 else None
+        received_text = f"0x{received:04X}" if received is not None else "unknown"
+        calculated_text = f"0x{calculated:04X}" if calculated is not None else "unknown"
+        raise ModbusCrcError(
+            "CRC mismatch: "
+            f"received {received_text}, calculated {calculated_text}; "
+            f"response: {bytes_to_hex(frame)}"
+        )
 
 
 def _ensure_min_frame_length(frame: bytes, minimum: int) -> None:
     if len(frame) < minimum:
         raise ModbusFrameError(
-            f"frame too short: expected at least {minimum} bytes, got {len(frame)}"
+            f"frame too short: expected at least {minimum} bytes, got {len(frame)}; "
+            f"response: {bytes_to_hex(frame)}"
         )
 
 

@@ -164,5 +164,12 @@ def _format_test_report_txt(report: TestRunReport) -> str:
             lines.append(
                 f"    Error: {result.error_type or ''}: {result.error_message or ''}"
             )
+        hints = result.details.get("diagnostic_hints", [])
+        if hints:
+            lines.append("    Hints:")
+            for hint in hints:
+                lines.append(f"    - [{hint.get('severity', '')}] {hint.get('title', '')}")
+                for action in hint.get("suggested_actions", []):
+                    lines.append(f"      {action}")
     lines.append("")
     return "\n".join(lines)
