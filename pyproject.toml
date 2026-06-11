@@ -1,0 +1,9 @@
+[project]
+name = "gas-pump-modbus-tester"
+version = "0.1.0"
+description = "CLI tools for testing gas pump firmware over Modbus RTU."
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
