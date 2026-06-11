@@ -123,6 +123,46 @@ python -m app.cli ping --port COM5 --slave 1 \
   --capture-txt output/ping_capture.txt
 ```
 
+## Offline simulator mode
+
+Simulator mode does not open a COM port. It is safe for development and
+no-hardware testing, but it is not a replacement for final hardware validation.
+Real hardware should still be tested with `diagnose`, `ping`, and `status`
+before protected config writes.
+
+Run normal read/test workflows without hardware:
+
+```bash
+python -m app.cli ping --simulate --slave 1
+python -m app.cli status --simulate --slave 1
+python -m app.cli live --simulate --slave 1
+python -m app.cli sensor --simulate --slave 1
+python -m app.cli clock --simulate --slave 1
+python -m app.cli log-latest --simulate --slave 1
+python -m app.cli log-dump --simulate --slave 1 --limit 3
+python -m app.cli test --simulate --slave 1
+python -m app.cli sim-demo
+```
+
+Try simulator profiles:
+
+```bash
+python -m app.cli test --simulate --sim-profile no-logs --slave 1
+python -m app.cli test --simulate --sim-profile sensor-invalid --slave 1
+python -m app.cli test --simulate --sim-profile bad-protocol --slave 1
+python -m app.cli test --simulate --sim-profile fail-event --slave 1
+```
+
+Protected config writes can also be tested safely in simulator mode:
+
+```bash
+python -m app.cli config-set-unit-price --simulate --slave 1 \
+  --password 1234 --value 25000 --yes
+
+python -m app.cli config-set-slave-id --simulate --slave 1 \
+  --password 1234 --new-id 2 --yes
+```
+
 ## Protected config writes
 
 These commands write to device configuration. Use only when the pump is safe to

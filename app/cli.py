@@ -46,6 +46,7 @@ from app.report import (
     write_test_report_txt,
 )
 from app.serial_transport import SerialTransport
+from app.simulator import GasPumpSimulator, SIMULATOR_PROFILES, SimulatedSerialTransport
 from app.test_runner import GasPumpTestRunner
 from app.troubleshooting import (
     DiagnosticHint,
@@ -266,6 +267,19 @@ def build_parser() -> argparse.ArgumentParser:
     log_dump_parser.add_argument("--json", type=Path, default=None, help="JSON output path")
     log_dump_parser.add_argument("--csv", type=Path, default=None, help="CSV output path")
     log_dump_parser.set_defaults(handler=handle_log_dump)
+
+    sim_demo_parser = subparsers.add_parser("sim-demo", help="run offline simulator demo")
+    sim_demo_parser.add_argument("--slave", type=parse_int, default=DEFAULT_SLAVE_ID, help="slave id")
+    sim_demo_parser.add_argument(
+        "--sim-profile",
+        choices=tuple(SIMULATOR_PROFILES),
+        default="normal",
+        help="simulator profile",
+    )
+    sim_demo_parser.add_argument("--debug", action="store_true", help="print raw TX/RX hex")
+    sim_demo_parser.add_argument("--capture-jsonl", type=Path, default=None, help="raw capture JSONL output path")
+    sim_demo_parser.add_argument("--capture-txt", type=Path, default=None, help="raw capture TXT output path")
+    sim_demo_parser.set_defaults(handler=handle_sim_demo)
 
     test_parser = subparsers.add_parser("test", help="run automated diagnostic tests")
     _add_common_serial_options(test_parser)
@@ -521,7 +535,10 @@ def handle_config_set_slave_id(args: argparse.Namespace) -> int:
         _print_write_result(result)
         print(f"Old slave id: {old_id}")
         print(f"New slave id: {args.new_id}")
-        print(f"Next command example: python -m app.cli ping --port {args.port} --slave {args.new_id}")
+        if getattr(args, "simulate", False):
+            print(f"Next command example: python -m app.cli ping --simulate --slave {args.new_id}")
+        else:
+            print(f"Next command example: python -m app.cli ping --port {args.port} --slave {args.new_id}")
         return 0 if result.success else 1
 
     return _run_config_action(args, operation)
@@ -632,7 +649,7 @@ def handle_diagnose(args: argparse.Namespace) -> int:
     if getattr(args, "_capture_buffer", None) is None:
         args._capture_buffer = RawCaptureBuffer()
     print("Gas Pump Modbus RTU Diagnose")
-    print(f"Port: {args.port}")
+    print(f"Port: {_display_port(args)}")
     print(f"Baudrate: {args.baudrate} 8N1")
     print(f"Requested slave: {args.slave}")
     print()
@@ -728,13 +745,7 @@ def handle_log_dump(args: argparse.Namespace) -> int:
 def handle_test(args: argparse.Namespace) -> int:
     """Run the automated non-destructive diagnostic suite."""
     capture = create_capture_from_args(args)
-    transport = SerialTransport(
-        port=args.port,
-        baudrate=args.baudrate,
-        timeout=args.timeout,
-        debug=args.debug,
-        capture=capture,
-    )
+    transport = create_transport_from_args(args, capture)
     try:
         transport.open()
     except SerialTransportError as exc:
@@ -745,7 +756,7 @@ def handle_test(args: argparse.Namespace) -> int:
         client = GasPumpModbusClient(transport=transport, slave_id=args.slave)
         runner = GasPumpTestRunner(
             client=client,
-            port=args.port,
+            port=_display_port(args),
             baudrate=args.baudrate,
             slave_id=args.slave,
             debug=args.debug,
@@ -763,7 +774,7 @@ def handle_test(args: argparse.Namespace) -> int:
                 return 2
 
         print("Gas Pump Modbus RTU Auto Test")
-        print(f"Port: {args.port}")
+        print(f"Port: {_display_port(args)}")
         print(f"Slave: {args.slave}")
         print()
         print(
@@ -789,6 +800,91 @@ def handle_test(args: argparse.Namespace) -> int:
         export_capture_from_args(args, capture)
 
 
+def handle_sim_demo(args: argparse.Namespace) -> int:
+    """Run an offline simulator demonstration."""
+    args.simulate = True
+    args.port = "SIM"
+    args.timeout = DEFAULT_TIMEOUT
+    args.baudrate = DEFAULT_BAUDRATE
+    capture = create_capture_from_args(args)
+    transport = create_transport_from_args(args, capture)
+    transport.open()
+    try:
+        client = GasPumpModbusClient(transport=transport, slave_id=args.slave)
+        print("Gas Pump Modbus RTU Simulator Demo")
+        print("==================================")
+        print()
+        print(f"Profile: {args.sim_profile}")
+        print(f"Slave: {args.slave}")
+        print()
+
+        print("[1] Ping")
+        status = client.ping()
+        print("PASS: device responded")
+        print(f"Protocol version: {status.protocol_version}")
+        print()
+
+        print("[2] Status")
+        print(f"Status flags: 0x{status.status_flags:04X} {_format_names(status.status_flag_names)}")
+        print(f"Nozzle: {status.nozzle_status} - {status.nozzle_status_text}")
+        print()
+
+        print("[3] Live data")
+        live = client.read_live_data()
+        print(f"Current amount: {live.current_amount}")
+        print(f"Current liters: {live.current_liters:.3f} L")
+        print(f"Unit price: {live.unit_price}")
+        print()
+
+        print("[4] Sensor")
+        sensor = client.read_sensor_snapshot()
+        print(f"MCU temperature: {sensor.mcu_temp_c:.2f} C")
+        print(f"Ambient valid: {'yes' if sensor.ambient_valid else 'no'}")
+        print()
+
+        print("[5] Clock")
+        print(f"Pump clock: {_format_clock(client.read_clock())}")
+        print()
+
+        print("[6] Fail event")
+        fail = client.read_fail_event()
+        print(f"Fail code: 0x{fail.code:04X} - {fail.code_text}")
+        print()
+
+        print("[7] Latest log")
+        try:
+            _print_log_window(client.read_log(0))
+        except ValueError as exc:
+            print(f"SKIP: {exc}")
+        print()
+
+        print("[8] Log dump limit 3")
+        logs = client.read_all_logs(limit=3, include_invalid=True)
+        print(f"Logs read: {len(logs)}")
+        print()
+
+        print("[9] Auto test")
+        report = GasPumpTestRunner(
+            client=client,
+            port="SIM",
+            baudrate=DEFAULT_BAUDRATE,
+            slave_id=args.slave,
+            debug=args.debug,
+            capture=capture,
+        ).run_all()
+        print(
+            f"PASS: {report.summary.get('PASS', 0)} | "
+            f"WARN: {report.summary.get('WARN', 0)} | "
+            f"FAIL: {report.summary.get('FAIL', 0)} | "
+            f"SKIP: {report.summary.get('SKIP', 0)} | "
+            f"TOTAL: {report.summary.get('TOTAL', 0)}"
+        )
+        print(f"Overall: {report.overall_status}")
+        return 0 if report.overall_status == "PASS" else 1
+    finally:
+        _close_transport(transport, args)
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
     parser = build_parser()
@@ -801,24 +897,25 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _add_common_serial_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--port", required=True, help="serial port, e.g. COM5")
+    parser.add_argument("--port", default=None, help="serial port, e.g. COM5")
     parser.add_argument("--slave", type=parse_int, default=DEFAULT_SLAVE_ID, help="slave id")
     parser.add_argument("--baudrate", type=parse_int, default=DEFAULT_BAUDRATE, help="baudrate")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="read timeout seconds")
     parser.add_argument("--debug", action="store_true", help="print raw TX/RX hex")
     parser.add_argument("--capture-jsonl", type=Path, default=None, help="raw capture JSONL output path")
     parser.add_argument("--capture-txt", type=Path, default=None, help="raw capture TXT output path")
+    parser.add_argument("--simulate", action="store_true", help="use offline simulator instead of a COM port")
+    parser.add_argument(
+        "--sim-profile",
+        choices=tuple(SIMULATOR_PROFILES),
+        default="normal",
+        help="simulator profile",
+    )
 
 
 def _open_client(args: argparse.Namespace) -> tuple[SerialTransport, GasPumpModbusClient]:
     capture = create_capture_from_args(args)
-    transport = SerialTransport(
-        port=args.port,
-        baudrate=args.baudrate,
-        timeout=args.timeout,
-        debug=args.debug,
-        capture=capture,
-    )
+    transport = create_transport_from_args(args, capture)
     transport.open()
     return transport, GasPumpModbusClient(transport=transport, slave_id=args.slave)
 
@@ -829,14 +926,41 @@ def _build_client(args: argparse.Namespace) -> GasPumpModbusClient:
     Kept for compatibility with tests or external callers; CLI handlers should
     prefer _open_client so the transport can be closed in a finally block.
     """
-    transport = SerialTransport(
+    transport = create_transport_from_args(args, create_capture_from_args(args))
+    return GasPumpModbusClient(transport=transport, slave_id=args.slave)
+
+
+def create_transport_from_args(
+    args: argparse.Namespace,
+    capture: RawCaptureBuffer | None = None,
+):
+    if getattr(args, "simulate", False):
+        simulator = GasPumpSimulator(
+            slave_id=args.slave,
+            profile=getattr(args, "sim_profile", "normal"),
+        )
+        return SimulatedSerialTransport(
+            simulator=simulator,
+            port="SIM",
+            timeout=args.timeout,
+            debug=args.debug,
+            capture=capture,
+        )
+    if not args.port:
+        raise SerialTransportError("--port is required unless --simulate is used")
+    return SerialTransport(
         port=args.port,
         baudrate=args.baudrate,
         timeout=args.timeout,
         debug=args.debug,
-        capture=create_capture_from_args(args),
+        capture=capture,
     )
-    return GasPumpModbusClient(transport=transport, slave_id=args.slave)
+
+
+def _display_port(args: argparse.Namespace) -> str:
+    if getattr(args, "simulate", False):
+        return "SIM"
+    return args.port or ""
 
 
 def _close_transport(transport: SerialTransport, args: argparse.Namespace) -> None:

@@ -1,0 +1,86 @@
+[
+  {
+    "log_count": 3,
+    "log_select": 0,
+    "log_status": 7,
+    "log_status_names": [
+      "has_log",
+      "select_valid",
+      "payload_loaded"
+    ],
+    "is_valid": true,
+    "pump_id": 1,
+    "clock": {
+      "year": 2026,
+      "month": 4,
+      "day": 24,
+      "hour": 15,
+      "minute": 30,
+      "second": 45
+    },
+    "sequence": 7,
+    "amount": 12345,
+    "liters_x1000": 536,
+    "liters": 0.536,
+    "unit_price": 23000,
+    "total_liters_x1000": 100536,
+    "total_liters": 100.536,
+    "checksum": 305419896
+  },
+  {
+    "log_count": 3,
+    "log_select": 1,
+    "log_status": 7,
+    "log_status_names": [
+      "has_log",
+      "select_valid",
+      "payload_loaded"
+    ],
+    "is_valid": true,
+    "pump_id": 1,
+    "clock": {
+      "year": 2026,
+      "month": 4,
+      "day": 24,
+      "hour": 14,
+      "minute": 15,
+      "second": 10
+    },
+    "sequence": 6,
+    "amount": 20000,
+    "liters_x1000": 870,
+    "liters": 0.87,
+    "unit_price": 23000,
+    "total_liters_x1000": 100000,
+    "total_liters": 100.0,
+    "checksum": 573855352
+  },
+  {
+    "log_count": 3,
+    "log_select": 2,
+    "log_status": 7,
+    "log_status_names": [
+      "has_log",
+      "select_valid",
+      "payload_loaded"
+    ],
+    "is_valid": true,
+    "pump_id": 1,
+    "clock": {
+      "year": 2026,
+      "month": 4,
+      "day": 23,
+      "hour": 18,
+      "minute": 5,
+      "second": 2
+    },
+    "sequence": 5,
+    "amount": 50000,
+    "liters_x1000": 2174,
+    "liters": 2.174,
+    "unit_price": 23000,
+    "total_liters_x1000": 99130,
+    "total_liters": 99.13,
+    "checksum": 842290808
+  }
+]
